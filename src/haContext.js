@@ -7,6 +7,7 @@ import {
   CONTEXT_CACHE_PATH,
   BLACKLIST_PATH,
   DEFAULT_SUMMARY_DOMAINS,
+  tokenizeForMatch,
 } from "./constants.js";
 import { logMessage } from "./logger.js";
 
@@ -16,6 +17,12 @@ const haContext = {
   summary: "",
   grouped: {},
   searchIndex: [],
+  /** @type {Map<string, object>} entity_id → entity */
+  entityMap: new Map(),
+  /** @type {Map<string, object[]>} area (lowercase) → entities */
+  areaIndex: new Map(),
+  /** @type {Map<string, number>} token → IDF weight */
+  tokenIdf: new Map(),
 };
 
 let contextReadyResolved = false;
@@ -33,6 +40,13 @@ function markContextReady() {
 
 export function getHaContext() {
   return haContext;
+}
+
+/**
+ * O(1) entity lookup by entity_id (replaces linear .find() scans).
+ */
+export function getEntityById(entityId) {
+  return haContext.entityMap.get(entityId) || null;
 }
 
 export function waitForContextReady() {
@@ -128,11 +142,14 @@ async function refreshHaContext(haBaseUrl, haToken) {
     haContext.searchIndex = filteredSearchIndex;
     haContext.summary = summaryParts.join("\n");
 
+    // Build fast-lookup indexes
+    rebuildIndexes(filteredEntities, filteredSearchIndex);
+
     await persistContextSnapshot(filteredEntities, filteredSearchIndex);
 
     logMessage(
       "INFO",
-      `[Context] Loaded ${filteredEntities.length} entities (blacklist: ${blacklist.size}).`,
+      `[Context] Loaded ${filteredEntities.length} entities (blacklist: ${blacklist.size}, IDF tokens: ${haContext.tokenIdf.size}).`,
     );
     markContextReady();
   } catch (err) {
@@ -158,24 +175,81 @@ async function loadHaContextFromCache() {
       (entity) => !blacklist.has(entity.entity_id),
     );
 
-    haContext.entities = filteredEntities;
-    haContext.grouped = groupEntities(filteredEntities);
-    haContext.searchIndex = (parsed.searchIndex || parsed.entities || [])
+    const filteredSearchIndex = (parsed.searchIndex || parsed.entities || [])
       .map((entity) => ({
         ...entity,
         supportsBrightness: entity.supportsBrightness ?? false,
       }))
       .filter((entity) => !blacklist.has(entity.entity_id));
+
+    haContext.entities = filteredEntities;
+    haContext.grouped = groupEntities(filteredEntities);
+    haContext.searchIndex = filteredSearchIndex;
     haContext.lastUpdated = parsed.generatedAt
       ? new Date(parsed.generatedAt)
       : new Date();
     haContext.summary = `Loaded ${haContext.entities.length} entities from cache (blacklist: ${blacklist.size})`;
 
-    logMessage("INFO", haContext.summary);
+    // Build fast-lookup indexes
+    rebuildIndexes(filteredEntities, filteredSearchIndex);
+
+    logMessage(
+      "INFO",
+      `${haContext.summary}, IDF tokens: ${haContext.tokenIdf.size}`,
+    );
     markContextReady();
   } catch (err) {
     logMessage("WARN", `[Context] Unable to load cache: ${err.message}`);
   }
+}
+
+/**
+ * Build entityMap, areaIndex, and tokenIdf from the current entity set.
+ * Called after every refresh or cache load.
+ */
+function rebuildIndexes(entities, searchIndex) {
+  // 1. entityMap: O(1) lookup by entity_id
+  haContext.entityMap = new Map(
+    entities.map((entity) => [entity.entity_id, entity]),
+  );
+
+  // 2. areaIndex: area (lowered) → [entities]
+  const areaIdx = new Map();
+  for (const entity of entities) {
+    const area = (entity.area || "").toLowerCase().trim();
+    if (!area) continue;
+    if (!areaIdx.has(area)) areaIdx.set(area, []);
+    areaIdx.get(area).push(entity);
+  }
+  haContext.areaIndex = areaIdx;
+
+  // 3. tokenIdf: token → IDF weight for scoring
+  haContext.tokenIdf = buildTokenIdf(searchIndex);
+}
+
+/**
+ * Compute inverse-document-frequency for each token across all entities.
+ * Rare tokens (e.g. "whiskey") get high IDF; common tokens (e.g. "sensor") get low IDF.
+ * Clamped to [0.5, 10] to avoid extreme values.
+ */
+function buildTokenIdf(searchIndex) {
+  const tokenEntityCount = new Map();
+  const totalEntities = searchIndex.length || 1;
+
+  for (const entity of searchIndex) {
+    const tokens = new Set(tokenizeForMatch(entity.normalized || ""));
+    for (const token of tokens) {
+      tokenEntityCount.set(token, (tokenEntityCount.get(token) || 0) + 1);
+    }
+  }
+
+  const idf = new Map();
+  for (const [token, count] of tokenEntityCount) {
+    const raw = Math.log2(totalEntities / count);
+    idf.set(token, Math.max(0.5, Math.min(raw, 10)));
+  }
+
+  return idf;
 }
 
 async function persistContextSnapshot(entities, searchIndex) {

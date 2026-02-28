@@ -196,17 +196,24 @@ async function processTextCommand({ text, sender, history, correlationId }) {
 
   const directAction = detectDirectAliasCommand(text, sender);
   if (directAction) {
-    const result = await callHaService(
-      directAction.service,
-      directAction.entity_id,
-      directAction.data,
-    );
-    ensureTokensLogged();
-    if (result.success) {
-      updateUserLastEntity(sender, directAction.entity_id);
-      return directAction.successMessage || "Done.";
+    const actionResults = [];
+    for (const action of directAction.actions) {
+      const result = await callHaService(
+        action.service,
+        action.entity_id,
+        action.data,
+      );
+      actionResults.push(result);
+      if (result.success) {
+        updateUserLastEntity(sender, action.entity_id);
+      }
     }
-    return result.message || "Command failed.";
+    ensureTokensLogged();
+    const failed = actionResults.find((item) => !item.success);
+    if (failed) {
+      return failed.message || "Command failed.";
+    }
+    return directAction.successMessage || "Done.";
   }
 
   if (hasPlanner()) {

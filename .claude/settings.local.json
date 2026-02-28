@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh auth status)",
+      "Bash(git config user.name)",
+      "Bash(git config user.email)",
+      "Bash(node scripts/test_resolver.mjs)",
+      "Bash(node scripts/test_resolver.mjs \"turn on whiskey\" \"turn off couch\" \"switch on living room spots\" \"turn off cinema bloom\" \"set whiskey to 100%\" \"dim couch to 25%\" \"status whiskey\" \"set all cinema lights to 20%\" \"turn on the tv\" \"office ac\" \"living room light\")",
+      "Bash(node scripts/test_resolver.mjs \"turn on the tv\" \"turn off cinema bloom\" \"cinema blooms\" \"living room\")",
+      "Bash(node -e \":*)"
+    ]
+  }
+}

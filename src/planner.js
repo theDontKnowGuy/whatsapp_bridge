@@ -74,7 +74,10 @@ export async function planSmartAction({
 
   const requestedDomains = inferDomainsFromText(text);
   const domainSummary = buildDomainSummary(requestedDomains);
-  const candidateEntities = buildRelevantEntitiesSnippet(text);
+  const candidateEntities = buildRelevantEntitiesSnippet(text, {
+    domains: requestedDomains,
+    limit: 50,
+  });
   const historyPrompt = formatHistory(history);
 
   const messages = [
